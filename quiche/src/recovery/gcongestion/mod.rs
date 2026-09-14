@@ -26,6 +26,7 @@
 
 mod bbr;
 mod bbr2;
+mod brutal;
 pub mod pacer;
 mod recovery;
 
@@ -33,6 +34,8 @@ use std::fmt::Debug;
 use std::str::FromStr;
 use std::time::Instant;
 
+use self::bbr2::BBRv2;
+use self::brutal::Brutal;
 pub use self::recovery::GRecovery;
 use crate::recovery::bandwidth::Bandwidth;
 
@@ -51,6 +54,7 @@ pub struct Acked {
     pub(super) time_sent: Instant,
 }
 
+#[enum_dispatch::enum_dispatch]
 pub(super) trait CongestionControl: Debug {
     /// Returns the name of the current state of the congestion control state
     /// machine. Used to annotate qlogs after state transitions.
@@ -128,6 +132,59 @@ pub(super) trait CongestionControl: Debug {
     #[cfg(feature = "qlog")]
     fn ssthresh(&self) -> Option<u64> {
         None
+    }
+
+    /// Returns the number of packets the pacer may send in a burst, if the
+    /// congestion controller overrides the pacer's lumpy pacing.
+    fn max_burst_packets(&self) -> Option<usize> {
+        None
+    }
+}
+
+/// The congestion controllers driven by [`GRecovery`].
+#[enum_dispatch::enum_dispatch(CongestionControl)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub(crate) enum Congestion {
+    BBRv2(BBRv2),
+    Brutal(Brutal),
+}
+
+impl Congestion {
+    pub(crate) fn time_sent_set_to_now(&self) -> bool {
+        match self {
+            Congestion::BBRv2(bbr) => bbr.time_sent_set_to_now(),
+            Congestion::Brutal(brutal) => brutal.time_sent_set_to_now(),
+        }
+    }
+
+    #[cfg(feature = "qlog")]
+    pub(crate) fn send_rate(&self) -> Option<Bandwidth> {
+        match self {
+            Congestion::BBRv2(bbr) => bbr.send_rate(),
+            Congestion::Brutal(brutal) => brutal.send_rate(),
+        }
+    }
+
+    #[cfg(feature = "qlog")]
+    pub(crate) fn ack_rate(&self) -> Option<Bandwidth> {
+        match self {
+            Congestion::BBRv2(bbr) => bbr.ack_rate(),
+            Congestion::Brutal(brutal) => brutal.ack_rate(),
+        }
+    }
+
+    pub(crate) fn set_brutal_rate(
+        &mut self, bytes_per_sec: u64, rtt_stats: &RttStats,
+    ) -> crate::Result<()> {
+        match self {
+            Congestion::BBRv2(_) => Err(crate::Error::CongestionControl),
+
+            Congestion::Brutal(brutal) => {
+                brutal.set_rate(bytes_per_sec, rtt_stats);
+                Ok(())
+            },
+        }
     }
 }
 

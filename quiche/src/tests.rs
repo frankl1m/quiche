@@ -12897,3 +12897,135 @@ fn server_qlog() {
         panic!("expected Qlog event");
     }
 }
+
+#[test]
+fn brutal_set_rate() {
+    let mut pipe = test_utils::Pipe::new("brutal").unwrap();
+    assert_eq!(pipe.handshake(), Ok(()));
+
+    assert_eq!(pipe.client.set_brutal_rate(10_000_000), Ok(()));
+    assert_eq!(pipe.server.set_brutal_rate(20_000_000), Ok(()));
+
+    let client_path = pipe.client.paths.get_active().unwrap();
+    assert_eq!(client_path.recovery.pacing_rate(), 10_000_000);
+
+    let server_path = pipe.server.paths.get_active().unwrap();
+    assert_eq!(server_path.recovery.pacing_rate(), 20_000_000);
+
+    // Going back to BBRv2 is allowed.
+    assert_eq!(pipe.client.set_brutal_rate(0), Ok(()));
+}
+
+#[rstest]
+fn brutal_set_rate_other_cc(
+    #[values("reno", "cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    let mut pipe = test_utils::Pipe::new(cc_algorithm_name).unwrap();
+    assert_eq!(pipe.handshake(), Ok(()));
+
+    assert_eq!(
+        pipe.client.set_brutal_rate(10_000_000),
+        Err(Error::CongestionControl)
+    );
+    assert_eq!(
+        pipe.server.set_brutal_rate(10_000_000),
+        Err(Error::CongestionControl)
+    );
+}
+
+#[test]
+fn brutal_transfer() {
+    const DATA_LEN: usize = 1_000_000;
+
+    let mut config = test_utils::Pipe::default_config("brutal").unwrap();
+    config.set_initial_max_data(2 * DATA_LEN as u64);
+    config.set_initial_max_stream_data_bidi_local(2 * DATA_LEN as u64);
+    config.set_initial_max_stream_data_bidi_remote(2 * DATA_LEN as u64);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    assert_eq!(pipe.handshake(), Ok(()));
+
+    assert_eq!(pipe.client.set_brutal_rate(100_000_000), Ok(()));
+    assert_eq!(pipe.server.set_brutal_rate(100_000_000), Ok(()));
+
+    let data = vec![0xba; DATA_LEN];
+    let mut sent = 0;
+    let mut received = 0;
+    let mut fin = false;
+
+    for _ in 0..10_000 {
+        if sent < DATA_LEN {
+            match pipe.client.stream_send(0, &data[sent..], true) {
+                Ok(written) => sent += written,
+
+                Err(Error::Done) => (),
+
+                Err(e) => panic!("stream_send failed: {e:?}"),
+            }
+        }
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        while let Ok((read, stream_fin)) =
+            stream_recv_discard(&mut pipe.server, true, 0)
+        {
+            received += read;
+            fin = stream_fin;
+
+            if fin {
+                break;
+            }
+        }
+
+        if fin {
+            break;
+        }
+    }
+
+    assert_eq!(sent, DATA_LEN);
+    assert_eq!(received, DATA_LEN);
+    assert!(fin);
+}
+
+#[test]
+fn brutal_rate_on_new_paths() {
+    let mut config = Config::new(PROTOCOL_VERSION).unwrap();
+    assert_eq!(config.set_cc_algorithm_name("brutal"), Ok(()));
+    config
+        .load_cert_chain_from_pem_file("examples/cert.crt")
+        .unwrap();
+    config
+        .load_priv_key_from_pem_file("examples/cert.key")
+        .unwrap();
+    config
+        .set_application_protos(&[b"proto1", b"proto2"])
+        .unwrap();
+    config.verify_peer(false);
+    config.set_active_connection_id_limit(2);
+
+    let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
+
+    assert_eq!(pipe.client.set_brutal_rate(10_000_000), Ok(()));
+    assert_eq!(pipe.server.set_brutal_rate(20_000_000), Ok(()));
+
+    let server_addr = test_utils::Pipe::server_addr();
+    let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
+    assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
+    assert_eq!(pipe.advance(), Ok(()));
+
+    let client_pid = pipe
+        .client
+        .paths
+        .path_id_from_addrs(&(client_addr_2, server_addr))
+        .unwrap();
+    let client_path = pipe.client.paths.get(client_pid).unwrap();
+    assert_eq!(client_path.recovery.pacing_rate(), 10_000_000);
+
+    let server_pid = pipe
+        .server
+        .paths
+        .path_id_from_addrs(&(server_addr, client_addr_2))
+        .unwrap();
+    let server_path = pipe.server.paths.get(server_pid).unwrap();
+    assert_eq!(server_path.recovery.pacing_rate(), 20_000_000);
+}

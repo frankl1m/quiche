@@ -30,13 +30,14 @@
 
 use std::time::Instant;
 
-use crate::recovery::gcongestion::bbr2::BBRv2;
 use crate::recovery::gcongestion::Bandwidth;
+use crate::recovery::gcongestion::Congestion;
 use crate::recovery::gcongestion::CongestionControl;
 use crate::recovery::rtt::RttStats;
 use crate::recovery::RecoveryStats;
 use crate::recovery::ReleaseDecision;
 use crate::recovery::ReleaseTime;
+use crate::Result;
 
 use super::Acked;
 use super::Lost;
@@ -63,7 +64,7 @@ pub struct Pacer {
     /// Should this [`Pacer`] be making any release decisions?
     enabled: bool,
     /// Underlying sender
-    sender: BBRv2,
+    sender: Congestion,
     /// The maximum rate the [`Pacer`] will use.
     max_pacing_rate: Option<Bandwidth>,
     /// Number of unpaced packets to be sent before packets are delayed.
@@ -84,7 +85,8 @@ impl Pacer {
     /// implementation, and an optional throttling as specified by
     /// `max_pacing_rate`.
     pub(crate) fn new(
-        enabled: bool, congestion: BBRv2, max_pacing_rate: Option<Bandwidth>,
+        enabled: bool, congestion: Congestion,
+        max_pacing_rate: Option<Bandwidth>,
     ) -> Self {
         Pacer {
             enabled,
@@ -184,6 +186,11 @@ impl Pacer {
                 // limited.
                 self.lumpy_tokens = 1;
             }
+
+            // Fixed rate senders (Brutal) define their own burst size.
+            if let Some(max_burst_packets) = self.sender.max_burst_packets() {
+                self.lumpy_tokens = max_burst_packets.max(1);
+            }
         }
 
         self.lumpy_tokens -= 1;
@@ -275,6 +282,12 @@ impl Pacer {
 
     pub fn update_mss(&mut self, new_mss: usize) {
         self.sender.update_mss(new_mss)
+    }
+
+    pub fn set_brutal_rate(
+        &mut self, bytes_per_sec: u64, rtt_stats: &RttStats,
+    ) -> Result<()> {
+        self.sender.set_brutal_rate(bytes_per_sec, rtt_stats)
     }
 
     #[cfg(feature = "qlog")]

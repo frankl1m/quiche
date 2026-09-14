@@ -822,6 +822,17 @@ pub extern "C" fn quiche_conn_set_max_idle_timeout(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn quiche_conn_set_brutal_rate(
+    conn: &mut Connection, v: u64,
+) -> c_int {
+    match conn.set_brutal_rate(v) {
+        Ok(()) => 0,
+
+        Err(e) => e.to_c() as c_int,
+    }
+}
+
 #[repr(C)]
 pub struct RecvInfo<'a> {
     from: &'a sockaddr,

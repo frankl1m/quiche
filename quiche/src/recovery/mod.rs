@@ -321,6 +321,10 @@ pub trait RecoveryOps {
     fn get_next_release_time(&self) -> ReleaseDecision;
 
     fn gcongestion_enabled(&self) -> bool;
+
+    /// Sets the send rate of the Brutal congestion controller, in bytes per
+    /// second. Returns `Error::CongestionControl` for other algorithms.
+    fn set_brutal_rate(&mut self, bytes_per_sec: u64) -> Result<()>;
 }
 
 impl Recovery {
@@ -374,6 +378,12 @@ pub enum CongestionControlAlgorithm {
     /// BBRv2 congestion control algorithm implementation from gcongestion
     /// branch. `bbr2_gcongestion` in a string form.
     Bbr2Gcongestion = 4,
+    /// Brutal congestion control algorithm from Hysteria, with a fixed send
+    /// rate set by [`Connection::set_brutal_rate()`]. Behaves as
+    /// `Bbr2Gcongestion` until a rate is set. `brutal` in a string form.
+    ///
+    /// [`Connection::set_brutal_rate()`]: ../struct.Connection.html#method.set_brutal_rate
+    Brutal          = 5,
 }
 
 impl FromStr for CongestionControlAlgorithm {
@@ -389,6 +399,7 @@ impl FromStr for CongestionControlAlgorithm {
             "bbr" => Ok(CongestionControlAlgorithm::Bbr2Gcongestion),
             "bbr2" => Ok(CongestionControlAlgorithm::Bbr2Gcongestion),
             "bbr2_gcongestion" => Ok(CongestionControlAlgorithm::Bbr2Gcongestion),
+            "brutal" => Ok(CongestionControlAlgorithm::Brutal),
             _ => Err(crate::Error::CongestionControl),
         }
     }
@@ -862,6 +873,10 @@ mod tests {
         let algo =
             CongestionControlAlgorithm::from_str("bbr2_gcongestion").unwrap();
         assert_eq!(algo, CongestionControlAlgorithm::Bbr2Gcongestion);
+        assert!(recovery_for_alg(algo).gcongestion_enabled());
+
+        let algo = CongestionControlAlgorithm::from_str("brutal").unwrap();
+        assert_eq!(algo, CongestionControlAlgorithm::Brutal);
         assert!(recovery_for_alg(algo).gcongestion_enabled());
     }
 

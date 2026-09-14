@@ -1356,6 +1356,9 @@ where
     /// The configuration for recovery.
     recovery_config: recovery::RecoveryConfig,
 
+    /// The send rate of the Brutal congestion controller, in bytes per second.
+    brutal_rate: u64,
+
     /// The path manager.
     paths: path::PathMap,
 
@@ -2080,6 +2083,8 @@ impl<F: BufFactory> Connection<F> {
 
             recovery_config,
 
+            brutal_rate: 0,
+
             paths,
             path_challenge_recv_max_queue_len: config
                 .path_challenge_recv_max_queue_len,
@@ -2431,6 +2436,37 @@ impl<F: BufFactory> Connection<F> {
             cmp::min(v, octets::MAX_VAR_INT);
 
         self.encode_transport_params()
+    }
+
+    /// Sets the send rate of the Brutal congestion controller, in bytes per
+    /// second.
+    ///
+    /// Brutal sends at the given rate without backing off on loss, and
+    /// compensates for the measured ACK rate. A rate of 0 (the default) makes
+    /// the connection use BBRv2 instead. The rate applies to all existing
+    /// paths, as well as to paths created later.
+    ///
+    /// This can be called at any time during the connection's lifetime.
+    ///
+    /// Returns [`CongestionControl`] if the congestion control algorithm is
+    /// not [`Brutal`].
+    ///
+    /// [`CongestionControl`]: enum.Error.html#variant.CongestionControl
+    /// [`Brutal`]: enum.CongestionControlAlgorithm.html#variant.Brutal
+    pub fn set_brutal_rate(&mut self, bytes_per_sec: u64) -> Result<()> {
+        if self.recovery_config.cc_algorithm !=
+            CongestionControlAlgorithm::Brutal
+        {
+            return Err(Error::CongestionControl);
+        }
+
+        self.brutal_rate = bytes_per_sec;
+
+        for (_, p) in self.paths.iter_mut() {
+            p.recovery.set_brutal_rate(bytes_per_sec)?;
+        }
+
+        Ok(())
     }
 
     /// Sets the congestion control algorithm used.
@@ -8027,6 +8063,12 @@ impl<F: BufFactory> Connection<F> {
                         if let Ok(path) = self.paths.get_active_mut() {
                             self.recovery_config = ex_data.recovery_config;
                             path.reinit_recovery(&self.recovery_config);
+
+                            if self.brutal_rate > 0 {
+                                path.recovery
+                                    .set_brutal_rate(self.brutal_rate)
+                                    .ok();
+                            }
                         }
                     }
 
@@ -9028,6 +9070,10 @@ impl<F: BufFactory> Connection<F> {
         path.max_send_bytes = buf_len * self.max_amplification_factor;
         path.active_scid_seq = Some(in_scid_seq);
 
+        if self.brutal_rate > 0 {
+            path.recovery.set_brutal_rate(self.brutal_rate).ok();
+        }
+
         // Automatically probes the new path.
         path.request_validation();
 
@@ -9176,6 +9222,10 @@ impl<F: BufFactory> Connection<F> {
             None,
         );
         path.active_dcid_seq = Some(dcid_seq);
+
+        if self.brutal_rate > 0 {
+            path.recovery.set_brutal_rate(self.brutal_rate).ok();
+        }
 
         let pid = self
             .paths

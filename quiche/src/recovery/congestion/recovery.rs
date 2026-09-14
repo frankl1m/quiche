@@ -1084,6 +1084,10 @@ impl RecoveryOps for LegacyRecovery {
         false
     }
 
+    fn set_brutal_rate(&mut self, _bytes_per_sec: u64) -> Result<()> {
+        Err(Error::CongestionControl)
+    }
+
     fn lost_count(&self) -> usize {
         self.congestion.lost_count
     }

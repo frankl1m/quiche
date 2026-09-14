@@ -42,8 +42,10 @@ use crate::recovery::MAX_PTO_PROBES_COUNT;
 use crate::recovery::PACKET_REORDER_TIME_THRESHOLD;
 
 use super::bbr2::BBRv2;
+use super::brutal::Brutal;
 use super::pacer::Pacer;
 use super::Acked;
+use super::Congestion;
 use super::Lost;
 
 // Congestion Control
@@ -512,14 +514,23 @@ impl GRecovery {
     }
 
     pub fn new(recovery_config: &RecoveryConfig) -> Option<Self> {
-        let cc = match recovery_config.cc_algorithm {
+        let cc: Congestion = match recovery_config.cc_algorithm {
             CongestionControlAlgorithm::Bbr2Gcongestion => BBRv2::new(
                 recovery_config.initial_congestion_window_packets,
                 MAX_WINDOW_PACKETS,
                 recovery_config.max_send_udp_payload_size,
                 recovery_config.initial_rtt,
                 recovery_config.custom_bbr_params.as_ref(),
-            ),
+            )
+            .into(),
+            CongestionControlAlgorithm::Brutal => Brutal::new(
+                recovery_config.initial_congestion_window_packets,
+                MAX_WINDOW_PACKETS,
+                recovery_config.max_send_udp_payload_size,
+                recovery_config.initial_rtt,
+                recovery_config.custom_bbr_params.as_ref(),
+            )
+            .into(),
             _ => return None,
         };
 
@@ -1180,6 +1191,10 @@ impl RecoveryOps for GRecovery {
 
     fn gcongestion_enabled(&self) -> bool {
         true
+    }
+
+    fn set_brutal_rate(&mut self, bytes_per_sec: u64) -> Result<()> {
+        self.pacer.set_brutal_rate(bytes_per_sec, &self.rtt_stats)
     }
 
     #[cfg(feature = "qlog")]
