@@ -217,6 +217,78 @@ fn transport_params_unknown_is_reserved() {
     assert!(!not_reserved_unknown_param.is_reserved());
 }
 #[test]
+fn export_keying_material() {
+    // Raw UUID bytes, as used by TUIC v5, which are not valid UTF-8.
+    const LABEL: [u8; 16] = [
+        0xff, 0xfe, 0x00, 0x80, 0xc3, 0x28, 0xa0, 0xa1, 0xe2, 0x28, 0xa1, 0xf0,
+        0x90, 0x28, 0xbc, 0x0f,
+    ];
+    const CONTEXT: &[u8] = b"password";
+
+    assert!(std::str::from_utf8(&LABEL).is_err());
+
+    let mut pipe = test_utils::Pipe::new("cubic").unwrap();
+
+    // Not available before the handshake completes.
+    let mut out = [0; 32];
+    assert_eq!(
+        pipe.client.export_keying_material(&LABEL, CONTEXT, &mut out),
+        Err(Error::InvalidState)
+    );
+    assert_eq!(
+        pipe.server.export_keying_material(&LABEL, CONTEXT, &mut out),
+        Err(Error::InvalidState)
+    );
+
+    assert_eq!(pipe.handshake(), Ok(()));
+
+    let mut client_out = [0; 32];
+    let mut server_out = [0; 32];
+    assert_eq!(
+        pipe.client
+            .export_keying_material(&LABEL, CONTEXT, &mut client_out),
+        Ok(())
+    );
+    assert_eq!(
+        pipe.server
+            .export_keying_material(&LABEL, CONTEXT, &mut server_out),
+        Ok(())
+    );
+    assert_eq!(client_out, server_out);
+    assert_ne!(client_out, [0; 32]);
+
+    // A different context gives different keying material.
+    let mut other_out = [0; 32];
+    assert_eq!(
+        pipe.client
+            .export_keying_material(&LABEL, b"passw0rd", &mut other_out),
+        Ok(())
+    );
+    assert_ne!(other_out, client_out);
+
+    // So does a different label.
+    let mut other_label = LABEL;
+    other_label[15] ^= 0x01;
+    assert_eq!(
+        pipe.client
+            .export_keying_material(&other_label, CONTEXT, &mut other_out),
+        Ok(())
+    );
+    assert_ne!(other_out, client_out);
+
+    let mut server_other_out = [0; 32];
+    assert_eq!(
+        pipe.server.export_keying_material(
+            &other_label,
+            CONTEXT,
+            &mut server_other_out
+        ),
+        Ok(())
+    );
+    assert_eq!(server_other_out, other_out);
+}
+
+#[test]
 fn unknown_version() {
     let mut config = Config::new(0xbabababa).unwrap();
     config

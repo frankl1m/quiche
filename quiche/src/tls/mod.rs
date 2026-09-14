@@ -584,6 +584,29 @@ impl Handshake {
         unsafe { SSL_session_reused(self.as_ptr()) == 1 }
     }
 
+    pub fn export_keying_material(
+        &self, label: &[u8], context: &[u8], out: &mut [u8],
+    ) -> Result<()> {
+        let rc = unsafe {
+            SSL_export_keying_material(
+                self.ptr,
+                out.as_mut_ptr(),
+                out.len(),
+                label.as_ptr() as *const c_char,
+                label.len(),
+                context.as_ptr(),
+                context.len(),
+                1,
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::TlsFail);
+        }
+
+        Ok(())
+    }
+
     pub fn clear(&mut self) -> Result<()> {
         let rc = unsafe { SSL_clear(self.as_mut_ptr()) };
         self.map_result_ssl(rc)
@@ -1198,6 +1221,12 @@ extern "C" {
     fn SSL_quic_write_level(ssl: *const SSL) -> crypto::Level;
 
     fn SSL_session_reused(ssl: *const SSL) -> c_int;
+
+    fn SSL_export_keying_material(
+        ssl: *mut SSL, out: *mut u8, out_len: usize, label: *const c_char,
+        label_len: usize, context: *const u8, context_len: usize,
+        use_context: c_int,
+    ) -> c_int;
 
     fn SSL_in_init(ssl: *const SSL) -> c_int;
 

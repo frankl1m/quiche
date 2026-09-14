@@ -1232,6 +1232,36 @@ pub extern "C" fn quiche_conn_session(
 }
 
 #[no_mangle]
+pub extern "C" fn quiche_conn_export_keying_material(
+    conn: &Connection, label: *const u8, label_len: size_t,
+    context: *const u8, context_len: size_t, out: *mut u8, out_len: size_t,
+) -> c_int {
+    let label = if label_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(label, label_len) }
+    };
+
+    let context = if context_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(context, context_len) }
+    };
+
+    let out = if out_len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(out, out_len) }
+    };
+
+    match conn.export_keying_material(label, context, out) {
+        Ok(()) => 0,
+
+        Err(e) => e.to_c() as c_int,
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn quiche_conn_server_name(
     conn: &Connection, out: &mut *const u8, out_len: &mut size_t,
 ) {

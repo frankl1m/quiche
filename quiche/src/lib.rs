@@ -7645,6 +7645,30 @@ impl<F: BufFactory> Connection<F> {
         self.session.as_deref()
     }
 
+    /// Exports keying material from the TLS session, as described in
+    /// [RFC 5705] and [RFC 8446 section 7.5].
+    ///
+    /// `out` is filled with keying material derived from `label` and
+    /// `context`. The label is a byte string and doesn't need to be valid
+    /// UTF-8.
+    ///
+    /// Returns [`InvalidState`] if the handshake is not complete yet, or
+    /// [`TlsFail`] if the keying material can't be exported.
+    ///
+    /// [RFC 5705]: https://www.rfc-editor.org/rfc/rfc5705
+    /// [RFC 8446 section 7.5]: https://www.rfc-editor.org/rfc/rfc8446#section-7.5
+    /// [`InvalidState`]: enum.Error.html#variant.InvalidState
+    /// [`TlsFail`]: enum.Error.html#variant.TlsFail
+    pub fn export_keying_material(
+        &self, label: &[u8], context: &[u8], out: &mut [u8],
+    ) -> Result<()> {
+        if !self.is_established() {
+            return Err(Error::InvalidState);
+        }
+
+        self.handshake.export_keying_material(label, context, out)
+    }
+
     /// Returns the source connection ID.
     ///
     /// When there are multiple IDs, and if there is an active path, the ID used
