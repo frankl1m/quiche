@@ -7266,6 +7266,58 @@ fn app_limited_not_changed_on_no_new_frames(
 }
 
 #[rstest]
+fn stream_send_buffered_data_bounded(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    let mut config = Config::new(PROTOCOL_VERSION).unwrap();
+    assert_eq!(config.set_cc_algorithm_name(cc_algorithm_name), Ok(()));
+    config
+        .load_cert_chain_from_pem_file("examples/cert.crt")
+        .unwrap();
+    config
+        .load_priv_key_from_pem_file("examples/cert.key")
+        .unwrap();
+    config
+        .set_application_protos(&[b"proto1", b"proto2"])
+        .unwrap();
+    config.set_initial_max_data(2_000_000);
+    config.set_initial_max_stream_data_bidi_local(2_000_000);
+    config.set_initial_max_stream_data_bidi_remote(2_000_000);
+    config.set_initial_max_streams_bidi(3);
+    config.verify_peer(false);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    assert_eq!(pipe.handshake(), Ok(()));
+
+    // A bulk sender writes all it may while none of it goes out, as when
+    // pacing holds it back. Each packet it receives used to grant the free
+    // congestion window again, until the peer's flow control stopped it.
+    let buf = vec![0; 100_000];
+    for _ in 0..200 {
+        let _ = pipe.client.stream_send(0, &buf, false);
+
+        assert_eq!(pipe.server.send_ack_eliciting(), Ok(()));
+        let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+        test_utils::process_flight(&mut pipe.client, flight).unwrap();
+    }
+
+    let cwnd = pipe.client.paths.get_active().unwrap().recovery.cwnd();
+    assert!(
+        pipe.client.streams.tx_buffered() <= cmp::max(cwnd, MIN_TX_BUFFERED_CAP)
+    );
+
+    // Once some of it goes out and is acked, what a new stream has to say
+    // fits: the connection window was not all spent in the buffer, and there
+    // is no need to wait for the peer to read and send MAX_DATA.
+    let flight = test_utils::emit_flight(&mut pipe.client).unwrap();
+    test_utils::process_flight(&mut pipe.server, flight).unwrap();
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    assert_eq!(pipe.client.stream_send(4, b"hello", true), Ok(5));
+}
+
+#[rstest]
 fn app_limited_small_exchanges_stay_in_startup(
     #[values("bbr2_gcongestion", "brutal")] cc_algorithm_name: &str,
 ) {

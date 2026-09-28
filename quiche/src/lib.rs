@@ -501,6 +501,10 @@ const MAX_CRYPTO_STREAM_OFFSET: u64 = 1 << 16;
 // The send capacity factor.
 const TX_CAP_FACTOR: f64 = 1.0;
 
+// The least that stream data buffered and not sent yet may reach before
+// `stream_send()` takes no more, whatever the congestion window.
+const MIN_TX_BUFFERED_CAP: usize = 1024 * 1024;
+
 /// Ancillary information about incoming packets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecvInfo {
@@ -8983,14 +8987,27 @@ impl<F: BufFactory> Connection<F> {
     }
 
     /// Updates send capacity.
+    ///
+    /// Stream data that is buffered and not sent yet counts too: it may not
+    /// exceed the congestion window, or `MIN_TX_BUFFERED_CAP` when that is
+    /// larger. Every packet received used to grant the free congestion window
+    /// again, while pacing held back what was already buffered, so a sender
+    /// that always had data kept buffering until the peer's flow control
+    /// stopped it: the whole connection window ended up queued in the streams,
+    /// and a new stream could not send a single byte until the next MAX_DATA.
     fn update_tx_cap(&mut self) {
-        let cwin_available = match self.paths.get_active() {
-            Ok(p) => p.recovery.cwnd_available() as u64,
-            Err(_) => 0,
+        let (cwin_available, cwnd) = match self.paths.get_active() {
+            Ok(p) => (p.recovery.cwnd_available(), p.recovery.cwnd()),
+            Err(_) => (0, 0),
         };
 
-        let cap =
-            cmp::min(cwin_available, self.max_tx_data - self.tx_data) as usize;
+        let buffered_cap = cmp::max(cwnd, MIN_TX_BUFFERED_CAP)
+            .saturating_sub(self.streams.tx_buffered());
+
+        let cap = cmp::min(
+            cmp::min(cwin_available, buffered_cap) as u64,
+            self.max_tx_data - self.tx_data,
+        ) as usize;
         self.tx_cap = (cap as f64 * self.tx_cap_factor).ceil() as usize;
     }
 
