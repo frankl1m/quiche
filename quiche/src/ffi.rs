@@ -323,6 +323,12 @@ pub extern "C" fn quiche_config_set_max_ack_delay(config: &mut Config, v: u64) {
 }
 
 #[no_mangle]
+pub extern "C" fn quiche_config_set_initial_rtt(config: &mut Config, v: u64) {
+    // A zero RTT would give a zero PTO and an infinite initial pacing rate.
+    config.set_initial_rtt(Duration::from_millis(v.max(1)));
+}
+
+#[no_mangle]
 pub extern "C" fn quiche_config_set_disable_active_migration(
     config: &mut Config, v: bool,
 ) {
@@ -2255,6 +2261,23 @@ fn std_time_to_c(time: &Instant, out: &mut timespec) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_set_initial_rtt() {
+        let config = quiche_config_new(PROTOCOL_VERSION);
+        assert!(!config.is_null());
+
+        let c = unsafe { &mut *config };
+        assert_eq!(c.initial_rtt, DEFAULT_INITIAL_RTT);
+
+        quiche_config_set_initial_rtt(c, 60);
+        assert_eq!(c.initial_rtt, Duration::from_millis(60));
+
+        quiche_config_set_initial_rtt(c, 0);
+        assert_eq!(c.initial_rtt, Duration::from_millis(1));
+
+        quiche_config_free(config);
+    }
 
     #[cfg(target_os = "windows")]
     fn timespec_nanos(t: &timespec) -> u128 {
