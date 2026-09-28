@@ -4152,7 +4152,30 @@ impl<F: BufFactory> Connection<F> {
 
         let mut b = octets::OctetsMut::with_slice(out);
 
-        let pkt_type = self.write_pkt_type(send_pid)?;
+        let pkt_type = match self.write_pkt_type(send_pid) {
+            Ok(v) => v,
+
+            Err(Error::Done) => {
+                // Nothing left to send: the application ran out of data, or
+                // flow control holds it back. The congestion controller must
+                // know, as in Google's CheckIfApplicationLimited(); the check
+                // further below only runs when a packet is built anyway, for
+                // an ACK for instance. Without it the bandwidth samples of
+                // small exchanges count as network-limited, and BBR's max
+                // bandwidth filter falls to what that traffic delivers.
+                if let Ok(path) = self.paths.get_mut(send_pid) {
+                    if path.recovery.cwnd_available() >
+                        frame::MAX_STREAM_OVERHEAD
+                    {
+                        path.recovery.on_app_limited();
+                    }
+                }
+
+                return Err(Error::Done);
+            },
+
+            Err(e) => return Err(e),
+        };
 
         let max_dgram_len = if !self.dgram_send_queue.is_empty() {
             self.dgram_max_writable_len()

@@ -7266,6 +7266,53 @@ fn app_limited_not_changed_on_no_new_frames(
 }
 
 #[rstest]
+fn app_limited_small_exchanges_stay_in_startup(
+    #[values("bbr2_gcongestion", "brutal")] cc_algorithm_name: &str,
+) {
+    let mut config = Config::new(PROTOCOL_VERSION).unwrap();
+    assert_eq!(config.set_cc_algorithm_name(cc_algorithm_name), Ok(()));
+    config
+        .set_application_protos(&[b"proto1", b"proto2"])
+        .unwrap();
+    config.set_initial_max_data(50000);
+    config.set_initial_max_stream_data_bidi_local(50000);
+    config.set_initial_max_stream_data_bidi_remote(50000);
+    config.set_initial_max_streams_bidi(3);
+    config.verify_peer(false);
+
+    let mut pipe = test_utils::Pipe::with_client_config(&mut config).unwrap();
+    assert_eq!(pipe.handshake(), Ok(()));
+    assert_eq!(pipe.advance(), Ok(()));
+
+    // Small request/response exchanges, each end answering at once, so its
+    // ACK rides with its data and no ACK-only packet is built. The sender
+    // only learns that it ran out of data when nothing is left to send: those
+    // rounds are app-limited, and BBR must not take them for a bandwidth
+    // plateau nor leave STARTUP at the rate they deliver.
+    let mut buf = [0; 64];
+    assert_eq!(pipe.client.stream_send(0, b"ping", false), Ok(4));
+
+    for _ in 0..20 {
+        let flight = test_utils::emit_flight(&mut pipe.client).unwrap();
+        test_utils::process_flight(&mut pipe.server, flight).unwrap();
+
+        let (len, _) = pipe.server.stream_recv(0, &mut buf).unwrap();
+        assert_eq!(pipe.server.stream_send(0, &buf[..len], false), Ok(len));
+
+        let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+        test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+        let (len, _) = pipe.client.stream_recv(0, &mut buf).unwrap();
+        assert_eq!(pipe.client.stream_send(0, &buf[..len], false), Ok(len));
+    }
+
+    for conn in [&pipe.client, &pipe.server] {
+        let recovery = &conn.paths.get_active().expect("no active").recovery;
+        assert_eq!(recovery.startup_exit(), None);
+    }
+}
+
+#[rstest]
 fn limit_ack_ranges(
     #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
 ) {
