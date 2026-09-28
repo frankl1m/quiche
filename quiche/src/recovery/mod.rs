@@ -1990,13 +1990,9 @@ mod tests {
         assert_eq!(r.bytes_in_flight(), 6000);
         assert_eq!(r.bytes_in_flight_duration(), initial_rtt);
 
-        if !pacing_enabled {
-            // Pacing is disabled.
-            assert_eq!(r.get_packet_send_time(now), now);
-        } else {
-            // Pacing is done from the beginning.
-            assert_ne!(r.get_packet_send_time(now), now);
-        }
+        // Leaving quiescence, the pacer lets the first packets out without
+        // pacing (INITIAL_UNPACED_BURST): see `pacing_after_quiescence`.
+        assert_eq!(r.get_packet_send_time(now), now);
 
         // Send the third and fourth packet bursts together.
         let p = Sent {
@@ -2062,8 +2058,6 @@ mod tests {
         assert_eq!(r.bytes_in_flight(), 13000);
         assert_eq!(r.bytes_in_flight_duration(), initial_rtt);
 
-        // We pace this outgoing packet. as all conditions for pacing
-        // are passed.
         let pacing_rate = if pacing_enabled {
             let cwnd_gain: f64 = 2.0;
             // Adjust for cwnd_gain.  BW estimate was made before the CWND
@@ -2075,23 +2069,8 @@ mod tests {
         };
         assert_eq!(r.pacing_rate(), pacing_rate);
 
-        let scale_factor = if pacing_enabled {
-            // For bbr2_gcongestion, send time is almost 13000 / pacing_rate.
-            // Don't know where 13000 comes from.
-            1.08333332
-        } else {
-            1.0
-        };
-        assert_eq!(
-            r.get_packet_send_time(now) - now,
-            if pacing_enabled {
-                Duration::from_secs_f64(
-                    scale_factor * 12000.0 / pacing_rate as f64,
-                )
-            } else {
-                Duration::ZERO
-            }
-        );
+        // Still within the unpaced burst after quiescence.
+        assert_eq!(r.get_packet_send_time(now), now);
         assert_eq!(r.startup_exit(), None);
 
         let reduced_rtt = Duration::from_millis(40);
@@ -2148,17 +2127,11 @@ mod tests {
             }
         );
 
-        // When enabled, the pacer adds a 25msec delay to the packet
-        // sends which will be applied to the sent times tracked by
-        // the recovery module, bringing down RTT to 15msec.
-        let expected_min_rtt = if pacing_enabled &&
-            !time_sent_set_to_now &&
-            cfg!(feature = "internal")
-        {
-            reduced_rtt - Duration::from_millis(25)
-        } else {
-            reduced_rtt
-        };
+        // The pacer did not delay these packets (unpaced burst after
+        // quiescence), so the sent times tracked by the recovery module are
+        // `now` even without `time_sent_set_to_now`.
+        let _ = time_sent_set_to_now;
+        let expected_min_rtt = reduced_rtt;
 
         assert_eq!(r.sent_packets_len(packet::Epoch::Application), 1);
         assert_eq!(r.bytes_in_flight(), 1000);
@@ -2190,16 +2163,6 @@ mod tests {
             }
         );
 
-        // Pacer adds 50msec delay to the second packet, resulting in
-        // an effective RTT of 0.
-        let expected_min_rtt = if pacing_enabled &&
-            !time_sent_set_to_now &&
-            cfg!(feature = "internal")
-        {
-            Duration::from_millis(0)
-        } else {
-            reduced_rtt
-        };
         assert_eq!(r.sent_packets_len(packet::Epoch::Application), 0);
         assert_eq!(r.bytes_in_flight(), 0);
         assert_eq!(r.bytes_in_flight_duration(), initial_rtt + reduced_rtt);
@@ -2207,6 +2170,91 @@ mod tests {
 
         let expected_srtt = (7 * expected_srtt + expected_min_rtt) / 8;
         assert_eq!(r.rtt(), expected_srtt);
+    }
+
+    #[rstest]
+    fn pacing_after_quiescence(
+        #[values("bbr2_gcongestion", "brutal")] cc_algorithm_name: &str,
+    ) {
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        assert_eq!(cfg.set_cc_algorithm_name(cc_algorithm_name), Ok(()));
+
+        let mut r = Recovery::new(&cfg);
+
+        let mut now = Instant::now();
+
+        let send = |r: &mut Recovery, pkt_num: u64, now: Instant| {
+            let p = Sent {
+                pkt_num,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1200,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: true,
+                is_pmtud_probe: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+        };
+
+        // A full initial window, all of it acked: nothing left in flight.
+        for pkt_num in 0..10 {
+            send(&mut r, pkt_num, now);
+        }
+
+        now += Duration::from_millis(50);
+
+        let mut acked = RangeSet::default();
+        acked.insert(0..10);
+
+        r.on_ack_received(
+            &acked,
+            10,
+            packet::Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            None,
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(r.bytes_in_flight(), 0);
+
+        now += Duration::from_millis(500);
+
+        // Leaving quiescence, the first 10 packets are not paced, as in
+        // Google's PacingSender.
+        for pkt_num in 10..20 {
+            send(&mut r, pkt_num, now);
+            assert_eq!(r.get_packet_send_time(now), now, "packet {pkt_num}");
+        }
+
+        // After them, pacing resumes at the pacing rate.
+        send(&mut r, 20, now);
+        let first = r.get_packet_send_time(now);
+        assert!(first > now);
+
+        let delay = first - now;
+        let expected = 1200.0 / r.pacing_rate() as f64;
+        assert!((delay.as_secs_f64() - expected).abs() < expected / 100.0);
+
+        send(&mut r, 21, now);
+        assert_eq!(r.get_packet_send_time(now), first + delay);
     }
 
     #[rstest]

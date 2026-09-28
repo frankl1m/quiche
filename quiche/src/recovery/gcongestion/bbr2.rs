@@ -745,8 +745,12 @@ impl CongestionControl for BBRv2 {
     fn on_connection_migration(&mut self) {}
 
     fn is_in_recovery(&self) -> bool {
-        // TODO(vlad): is this true?
-        self.last_quiescence_start.is_none()
+        // BBRv2 has no recovery state, as in Google's Bbr2Sender::InRecovery().
+        // The pacer asks this right after `on_packet_sent()`, which has just
+        // taken `last_quiescence_start` when leaving quiescence, so deriving it
+        // from there reported "in recovery" at exactly that moment and the
+        // pacer never granted the unpaced burst after quiescence.
+        false
     }
 
     fn is_cwnd_limited(&self, bytes_in_flight: usize) -> bool {
