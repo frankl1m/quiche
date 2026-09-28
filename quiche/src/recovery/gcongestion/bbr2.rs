@@ -856,4 +856,48 @@ mod tests {
             (2.88499 * pacing_cwnd as f64) as u64
         );
     }
+
+    #[test]
+    fn first_rtt_sample_replaces_initial_min_rtt() {
+        // An initial RTT below the path's, as an application that remembers a
+        // faster path could set.
+        let initial_rtt = Duration::from_millis(10);
+        let mut bbr2 = BBRv2::new(10, 10000, 1200, initial_rtt, None);
+        assert_eq!(bbr2.mode.network_model().min_rtt(), initial_rtt);
+
+        let rtt_stats = RttStats::new(initial_rtt, Duration::from_millis(25));
+        let mut recovery_stats = RecoveryStats::default();
+        let mut now = Instant::now();
+
+        // The first sample replaces it, a larger one does not, a smaller one
+        // does.
+        for (pkt_num, rtt, min_rtt) in [(1, 100, 100), (2, 120, 100), (3, 90, 90)]
+        {
+            bbr2.on_packet_sent(now, 0, pkt_num, 1200, true);
+
+            let sent = now;
+            now += Duration::from_millis(rtt);
+
+            bbr2.on_congestion_event(
+                true,
+                1200,
+                0,
+                now,
+                &[Acked {
+                    pkt_num,
+                    time_sent: sent,
+                }],
+                &[],
+                pkt_num + 1,
+                &rtt_stats,
+                &mut recovery_stats,
+            );
+
+            assert_eq!(
+                bbr2.mode.network_model().min_rtt(),
+                Duration::from_millis(min_rtt),
+                "packet {pkt_num}"
+            );
+        }
+    }
 }

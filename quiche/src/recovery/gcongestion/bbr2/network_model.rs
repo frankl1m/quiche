@@ -78,6 +78,8 @@ impl RoundTripCounter {
 struct MinRttFilter {
     min_rtt: Duration,
     min_rtt_timestamp: Instant,
+    /// Whether `min_rtt` comes from a sample, and not from the initial RTT.
+    has_sample: bool,
 }
 
 impl MinRttFilter {
@@ -90,15 +92,24 @@ impl MinRttFilter {
     }
 
     fn update(&mut self, sample_rtt: Duration, now: Instant) {
-        if sample_rtt < self.min_rtt {
+        // The first sample replaces the initial RTT even if it is larger, as
+        // in Google's MinRttFilter. Otherwise an initial RTT below the path's
+        // would stay as the min RTT until it expires.
+        if sample_rtt < self.min_rtt || !self.has_sample {
             self.min_rtt = sample_rtt;
             self.min_rtt_timestamp = now;
+            self.has_sample = true;
         }
     }
 
     fn force_update(&mut self, sample_rtt: Duration, now: Instant) {
         self.min_rtt = sample_rtt;
         self.min_rtt_timestamp = now;
+        self.has_sample = true;
+    }
+
+    fn postpone(&mut self, duration: Duration) {
+        self.min_rtt_timestamp = self.min_rtt_timestamp.add(duration);
     }
 }
 
@@ -211,6 +222,7 @@ impl BBRv2NetworkModel {
             min_rtt_filter: MinRttFilter {
                 min_rtt: initial_rtt,
                 min_rtt_timestamp: Instant::now(),
+                has_sample: false,
             },
             max_bandwidth_filter: MaxBandwidthFilter {
                 max_bandwidth: [Bandwidth::zero(), Bandwidth::zero()],
@@ -766,8 +778,7 @@ impl BBRv2NetworkModel {
     }
 
     pub(super) fn postpone_min_rtt_timestamp(&mut self, duration: Duration) {
-        self.min_rtt_filter
-            .force_update(self.min_rtt(), self.min_rtt_timestamp().add(duration));
+        self.min_rtt_filter.postpone(duration);
     }
 
     pub(super) fn on_app_limited(&mut self) {
