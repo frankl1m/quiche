@@ -1239,8 +1239,8 @@ pub extern "C" fn quiche_conn_session(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_export_keying_material(
-    conn: &Connection, label: *const u8, label_len: size_t,
-    context: *const u8, context_len: size_t, out: *mut u8, out_len: size_t,
+    conn: &Connection, label: *const u8, label_len: size_t, context: *const u8,
+    context_len: size_t, out: *mut u8, out_len: size_t,
 ) -> c_int {
     let label = if label_len == 0 {
         &[]
@@ -2131,8 +2131,7 @@ fn std_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
                 sin_addr,
 
                 #[cfg(any(
-                    target_os = "macos",
-                    target_os = "ios",
+                    target_vendor = "apple",
                     target_os = "watchos",
                     target_os = "freebsd",
                     target_os = "dragonfly",
@@ -2170,8 +2169,7 @@ fn std_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
                 sin6_addr,
 
                 #[cfg(any(
-                    target_os = "macos",
-                    target_os = "ios",
+                    target_vendor = "apple",
                     target_os = "watchos",
                     target_os = "freebsd",
                     target_os = "dragonfly",
@@ -2197,7 +2195,7 @@ fn std_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 fn std_time_to_c(time: &Instant, out: &mut timespec) {
     const INSTANT_ZERO: Instant =
         unsafe { std::mem::transmute(std::time::UNIX_EPOCH) };
@@ -2208,7 +2206,7 @@ fn std_time_to_c(time: &Instant, out: &mut timespec) {
     out.tv_nsec = raw_time.subsec_nanos() as libc::c_long;
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 fn std_time_to_c(_time: &Instant, out: &mut timespec) {
     // TODO: implement Instant conversion for systems that don't use timespec.
     out.tv_sec = 0;
@@ -2282,6 +2280,19 @@ mod tests {
     #[cfg(target_os = "windows")]
     fn timespec_nanos(t: &timespec) -> u128 {
         t.tv_sec as u128 * 1_000_000_000 + t.tv_nsec as u128
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn time_to_c_apple_unavailable() {
+        let now = Instant::now();
+        let mut out = timespec {
+            tv_sec: 123,
+            tv_nsec: 456,
+        };
+        std_time_to_c(&now, &mut out);
+        assert_eq!(out.tv_sec, 0);
+        assert_eq!(out.tv_nsec, 0);
     }
 
     #[cfg(target_os = "windows")]
